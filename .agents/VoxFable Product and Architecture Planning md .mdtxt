@@ -1,0 +1,255 @@
+# VoxFable: Product and Architecture Plan
+
+Draft v2 for review, November 17, 2026
+
+This document describes VoxFable as discussed so far. Items marked **Confirmed** come from your answers. Items marked **Proposed** are my suggestions and need your review. Libraries and code are not covered yet; that is the next step after this review.
+
+## 1. Vision
+
+VoxFable is a browser-based platform for procedural 3D and 2D generation, with editor assistance and AI-driven coding. It has two parts:
+
+- **VoxFable Engine**: a pure TS/JS engine (the SDK). It is optimized (culling, LOD), built on three.js and other libraries, and exposes one unified API.
+- **Fusion**: the VoxFable Editor, the UI and visual experience of the engine. Built with Vite + React, dockview, shadcn UI, and Monaco/Ace.
+
+Positioning (Confirmed): a procedural generator with the full power of scripting, rather than a node graph. Anything the engine can do, a script can do.
+
+### In one walkthrough
+
+1. The user opens Fusion. The home page is the Projects Sheet, where a project is created or opened. Only one project is open at a time, and it loads into Studio.
+2. In Studio the user creates entities and gives them components such as Transform, Render and Script. The Hierarchy Sheet shows the Core entities, and the Inspector Sheet shows the selected entity's components and properties.
+3. Scripts are files in the project. The user writes them in the Code Editor Sheet (or imports files written elsewhere, for example by an AI agent, through the Assets Sheet) and attaches them with the Script component. Script attributes appear as fields in the Inspector.
+4. The Tools strip follows the selected entity's components: gizmos for Transform, modeling tools for Render, and so on. Tool Properties shows the settings of the active tool.
+5. Scripts generate and change things live. Heavy work runs as small async jobs, and the status bar shows their progress. Removing or disabling a script puts the entity back to its old state.
+6. Edits made with tools and the Inspector can be undone and redone.
+7. Plugins come from the global plugin library, and each project imports the ones it uses.
+8. Export produces 3D files (glb/gltf, fbx, obj, stl), plugins or the whole project, zipped when there is more than one file.
+
+## 2. Vocabulary (Confirmed)
+
+- **VoxFable Engine**: the pure TS/JS engine (the SDK). It holds all sectors and runs without any UI.
+- **Fusion**: the VoxFable Editor. It is the UI and visual experience of the engine, and it only talks to the engine through its sectors.
+- **Sector**: one unified API of the engine (core, assets, plugins, events, settings, editor, and more).
+- **Entity / Component**: the Core API building blocks.
+- **Sheet**: one individual tool in Fusion (Assets Sheet, Inspector Sheet, Tool Properties Sheet, and so on).
+- **Panel**: one of four regions in Studio (Left, Center, Right, Bottom). A panel holds one or more sheets.
+- **Studio**: the default full-screen tab in Fusion. It holds all sheets in one, arranged in the four panels.
+- **Full-screen tab**: a sheet dragged out of Studio so it fills the window on its own.
+- **Plugin library**: the global shared folder of available plugins. **Project plugins**: plugins imported into a project.
+
+## 3. Engine and Sectors
+
+**Confirmed.** The engine provides these sectors: core (entities and components on top of three.js), assets (the file system), plugins, events, and settings/preferences/config. An editor sector connects Fusion to the engine. More sectors can be added by plugins.
+
+**Confirmed additions.**
+
+- **Scheduler sector**: runs all heavy work as async jobs (see section 7).
+- **Physics sector**: Ammo.js is built in as the first backend. It emits contact events that scripts can use (see section 6).
+- **AI sector**: the entry point for AI-driven coding. AI works externally through skill.md now; internal AI arrives in v2 (see section 15).
+
+### File system (assets sector, Confirmed)
+
+The SDK exposes one unified fs API with three backends behind it:
+
+1. **Local folder**: the browser File System Access API. The user opens a real folder; saves go to the user's disk.
+2. **Browser storage**: a cache/IndexedDB-based fs library. Works in most browsers.
+3. **Server/Node fs**: not available now. Planned for v2 or as a plugin.
+
+## 4. Core API
+
+**Confirmed.** Core is an entity system with a hierarchy. Each entity has components that the SDK defines (Transform, Render, Scripts, and so on). Components can be added by plugins.
+
+Core entities and components are built on three.js objects. One Core component can own many three.js objects. Example: a particle system is one Core entity, and the particles are many three.js objects underneath it.
+
+- **Hierarchy Sheet**: shows Core entities only.
+- **Threejs Hierarchy Sheet**: shows the pure three.js scene, hidden and visible objects, for debugging.
+- **Two ways to build**: a script can use the three.js API directly through Core (fully customizable, but no editor controls or tools), or it can use Core components (editor controls and tools apply).
+
+**Proposed.** Every three.js object created by a Core component gets an owner tag (the entity id), so the Threejs Hierarchy can group objects by their owning entity.
+
+### Entity default properties
+
+Every entity has these properties without needing any component. Name, tags and keywords are **Confirmed**. The rest of the list is **Proposed**.
+
+- `name`, `tags` and `keywords`.
+- `id`: unique and stable.
+- `enabled`: whether the entity is active.
+- `locked`: protects the entity from editing in Fusion.
+- `description`: a free note.
+- Parent and children, which form the hierarchy.
+
+### Default components
+
+**Confirmed:** physics components and 2D components are built in as default components, not plugins. Plugins can still add more components. The exact list below is **Proposed** and needs your review.
+
+- **3D basics**: Transform, Render (subtypes such as Shapes like cube and sphere, Mesh, and more later), Script, Camera, Light (directional, point, spot, ambient), Particle System, Audio.
+- **Physics** (built in, Ammo.js): RigidBody, Collider.
+- **2D** (built in, shown as planes in the 3D world): Sprite, Shape 2D, Text 2D.
+
+## 5. Scripts
+
+**Confirmed.**
+
+- A script is a file in the project fs (for example `scripts/RadialRepeat.js`). The Script component on an entity points to a script file. Several entities can share one file, each with its own attribute values.
+- Attributes: `attributes.add(name, schema)`. The schema is optional. A bare `{ type: 'number' }` works; a full schema adds default, array, range and other editor hints, and the Inspector builds its fields from it.
+- Hooks: `onInit`, `onPreUpdate`, `onUpdate`, `onPostUpdate`, `onAttributeChange`, `onDestroy`, plus the export hooks `onPreExport`, `onExport`, `onPostExport`.
+- Reload: saving a script file does not reload it. A Reload/Restart button and a keyboard shortcut do. Attribute changes already sync live through `onAttributeChange`.
+- Update mode for script attributes is decided by the script itself, through `onAttributeChange`.
+
+**Reading other scripts, and errors (Confirmed).** A script can read another script on the same entity, for example `this.entity.scripts.has('terrainMesh') ? this.entity.scripts.get('terrainMesh').attributes : null`, so it gets `null` when that script is gone. Script errors, including syntax errors, are shown in Fusion at the script, with the stack trace.
+
+Example from the original description: a Radial Repeat script on a cube entity, with attributes count, radius, orientation, angle, sweep and scale.
+
+**Proposed.** An attribute type `entity` (a reference to another entity), shown in the Inspector as an entity picker. Scripts that depend on another entity need this.
+
+## 6. Live Procedural Flow
+
+**Confirmed (from the original description).** Tools that belong to a component (modeling, sculpting, mesh editing) appear when that component is selected. Example: extrude a face, the scripts re-initialize, the scripts make their changes. Every change is received by components and can change them.
+
+**Example: physics-driven grass (Confirmed scenario, Proposed implementation).**
+
+Two entities: a surface (with the grass procedural script and a rigid body mesh) and a cube (rigid body). The grass is filled across the surface with noise. When the user moves the cube with a gizmo and it touches the surface, grass instantly covers the cube. Moving the cube away makes the grass leave, like a magnetic fluid.
+
+Proposed design:
+
+1. The physics sector emits `contact:begin` and `contact:end` with contact points and bodies.
+2. The grass script keeps blades in chunks (a spatial grid) and only touches chunks near a contact.
+3. Affected blades get a new target on the cube surface (sampled with a seeded random generator, so results are stable) and return home when the contact ends.
+4. Blade movement is animated on the GPU with per-instance attributes, so the CPU only decides which blades are involved.
+5. Blades live in an instanced mesh (one draw call). Culling and LOD apply.
+
+**Non-destructive generation (Confirmed).** Generation scripts work like Blender geometry nodes. Example: an entity has a Core grid Render component and a Terrain generation script.
+
+1. The script hides the Core grid (opacity 0, hidden but not deleted) and builds a mock mesh of exactly the same size with the three.js API.
+2. The user sees the mock mesh but cannot edit it directly. Changes happen through the script attributes, or by editing the hidden Core grid by hand. A wireframe toggle helps the user see and edit the hidden Core entity.
+3. Whether the Core part is hidden or shown is decided by the script. In this example it is hidden.
+4. Deleting the script leaves the pure Core entity, unchanged.
+
+Manual edits therefore live on the Core entity under the script, and the script output is rebuilt from them. Whether an optional bake step is also needed has not been discussed.
+
+**Editing the hidden Core entity (Confirmed).** The user can still edit it, even though it is hidden. An edit changes the Core entity, the entity's script receives the change, and the three.js mock mesh updates in realtime while the Core SDK entity updates too.
+
+Wireframe and outline are **Fusion options, not script or entity features**. They are a debugging aid and still show a hidden object, because they belong to the editor. The user first selects the entity, then enables wireframe or outline for the selected entity in Fusion.
+
+**Scripts decide, and clean up after themselves (Confirmed).** The grid and terrain flow above is only an example. A script can hide the Core part or leave it visible; that is the script's choice. When a script is deleted or disabled, the entity goes back to its old state and everything the script changed is gone. For extra cleanup, the script's `onDestroy` hook deletes the items the script made itself, such as hidden objects, an offscreen canvas, noise data or a generated mesh.
+
+**Delete or disable: one hook (Confirmed).** Disabling and deleting a script both run `onDestroy`. Re-enabling a script runs `onInit` again and rebuilds from scratch.
+
+**Removing a script (Confirmed).** Example: an entity with a Render component (cube) and a script that generates a noise-cube mesh. When the user removes the script, the entity is reset from its Render component. The effect is like deleting the entity and placing it again without the script, like disabling or removing a node in Blender geometry nodes, but nothing is really deleted: the entity is reset and keeps the same components, with or without hand edits.
+
+**Hand-made mesh edits (Confirmed).** If the user edited the cube by hand, the model is no longer a plain cube. The user's changes are stored as a variable and also saved in Assets. The Render component refers to that stored mesh with a name of the form `[shape or mesh name]#[variable id]`, for example `cube#m_2736` or `mesh#m_36`. When the script is deleted afterwards, the entity is recovered from this stored mesh, so the hand edits are kept.
+
+**Stored meshes (Confirmed).** Stored meshes live in the `/.meshes` folder, which is visible in the Assets Sheet. Other entities can reuse them. A mesh file can be renamed, but its id (for example `m_2736`) can never change, so references keep working.
+
+**Other scripts react automatically (Confirmed).** When a script is deleted or disabled, the other scripts on the same entity automatically run `onInit` again. Example: a Radial Repeat script that copied a Terrain script's mesh rebuilds from the reset entity after Terrain is removed.
+
+## 7. Async-First Execution (Confirmed principle, Proposed mechanism)
+
+**Confirmed.** Tasks run as functions and asynchronous processes, not long synchronous for/while loops. Work is placed one by one or group by group with small delays (about 0 to 100+ ms, for example 1 ms between groups) so the browser is not stressed. Each running process shows its progress in the status bar. A sudden large process can kill the tab (Aw Snap, WebGL or canvas errors), so this is a core design rule.
+
+**Scheduler sector (approved; mechanism proposed).**
+
+- A job queue with a time budget per frame (for example 2 to 4 ms) and optional delays.
+- Priorities, cancellation (moving the cube again drops the old job), and progress reporting.
+- Guards against crashes: caps on instance counts, chunked buffers that get disposed, workers for heavy sampling, handling of WebGL context loss.
+- The status bar reads the job list. Clicking a job shows details or cancels it.
+
+## 8. Fusion Layout (Confirmed)
+
+From top to bottom and left to right:
+
+- **Top menu** with dropdowns.
+- **Full-screen tabs row.** The default tab is **Studio**.
+- Inside Studio: an icons-only **Tools strip** on the far left, then the **Left panel**, **Center panel**, **Bottom panel** (under the center only) and **Right panel** (full height).
+- A thin **status bar** under the Bottom panel, spanning the window like VS Code. It shows running processes with progress.
+
+Sheet behavior:
+
+- By default every sheet lives in one of the four panels. Panels are resizable (dockview).
+- A sheet that is hard to use in a narrow panel (Code Editor, Assets) can be dragged into the full-screen tabs row. It moves there (it is not copied).
+- Closing any sheet hides it and stores its position and state in localStorage. It does not return to its origin panel.
+- A closed sheet is shown again from the View menu, where each sheet name is a checkbox.
+
+## 9. Sheets (Confirmed)
+
+- **Code Editor Sheet**: multi-tab code editor. The engine (Monaco or Ace) is a global setting. Monaco is recommended for desktop with a hardware keyboard (best suggestions and linting). Ace is recommended for tablets and phones with a virtual keyboard. There is no auto-detection; the user switches in Settings. Assets can be dropped in to insert a path.
+- **Projects Sheet**: Fusion's home page. Lists all projects (not scenes). Create, delete, edit title and description. Opening a project loads it into Studio. Only one project can be open at a time.
+- **Settings Sheet**: user preferences, stored globally in localStorage and exportable to and importable from JSON.
+- **Key Binding Preferences Sheet**: same storage and JSON export/import as Settings.
+- **Export Sheet**: see section 13.
+- **Previewer Sheet**: previews 3D files, assets and images. Opens on double-click of an asset.
+- **Assets Sheet**: folder-based file system with CRUD. Dropping files in to import is allowed. Right-click gives Copy Path. Assets can be dropped on Inspector fields and into the Code Editor. Dropping an asset onto the Canvas to create an entity is not allowed.
+- **Canvas Sheet**: the 3D editor.
+- **Image Editor Sheet**: a simple editor with separate tools (paint, shapes, paint with shapes, stamp), not modes. Main use: paint a grayscale image, export a PNG into Assets, and let a script use it as a heightmap. Advanced editing is left to Photoshop, Canva and similar apps.
+- **Inspector Sheet**: components of the selected entity and their properties (see section 11).
+- **Hierarchy Sheet**: Core entity tree.
+- **Plugin Manager Sheet**: see section 12.
+- **Threejs Hierarchy Sheet**: pure three.js scene for debugging.
+- **Tool Properties Sheet**: one shared sheet that shows the properties of whichever tool is active (tool-based, not mode-based). Image Editor tools and modeling tools both use it.
+
+## 10. Tools Strip (Confirmed)
+
+The strip is grouped, with no Object/Edit mode switch:
+
+1. **Global controls**: always shown, not tied to an entity. Move (moves the camera), select (selects entities), delete, and so on.
+2. **Transform tools** (gizmos): shown when the selected entity has a Transform component.
+3. **Modeling tools**: shown for Render subtypes such as Shapes (cube, sphere) and Mesh. Sub-groups: face-based tools (extrude, move, select, gizmos) and vector-based tools.
+4. **More groups** from other components. Plugins can add tools or override existing ones.
+
+With several entities selected, the strip shows only tools for components that all selected entities share.
+
+## 11. Inspector (Confirmed)
+
+- **Multi-select**: where all selected entities have the same value, it is shown. Where values differ, the field shows an ellipsis (...). Typing over the ellipsis applies the value to all selected entities. Gizmos move the group by a position delta applied to each entity.
+- **When changes apply**: depends on the user's performance setting. Low-performance (fast) mode applies on leave or Enter. High-performance mode applies live.
+- **Component override**: a component can declare its own live or on-change behavior, but the user's performance setting overrides it by default. A component wins only if it sets a flag such as `blockUserPreferenceOverride: true`.
+- **Script component**: not covered by these rules. The script decides through `onAttributeChange`.
+
+## 12. Plugins (Confirmed)
+
+- A plugin is a TS/JS file that extends the engine or Fusion. It exports a **header config** (name, version, title, description, and the target: engine or Fusion), followed by code that runs once and uses the SDK. It can keep updating live through SDK events.
+- **Plugin library**: the global shared folder `/.plugins` (local for now; cloud libraries are planned but do not exist yet). It contains a plugins map JSON: an array of objects, each with an extension name and a path. Fusion and the SDK read the map and load the mapped files.
+- **Project plugins**: each project imports the plugins it wants into its own `./plugins` folder. Only those run for that project. Project exports carry them along.
+- **When they run**: at Fusion start, or when a plugin is installed while Fusion is running.
+- **Versions**: a project stays on its imported version until the user updates it in the Plugin Manager Sheet. Fusion tells the user when a newer version is found.
+
+## 13. Export (Confirmed)
+
+- **3D formats**: glb/gltf, fbx (with textures), obj and stl.
+- **Packaging**: if an export produces more than one file, it is delivered as a zip.
+- **Script export hooks**: during an export, including a whole-project export, each Script component receives `onPreExport`, `onExport` and `onPostExport`. Scripts write what they need (for example used textures or an offscreen noise map) into the `/.exports` folder. This folder sits at the project root and is visible in the Assets Sheet. Fusion zips the folder.
+- The Export Sheet also handles plugin export and project export.
+
+## 14. 2D (Confirmed)
+
+2D has its own components with their own tools. 2D content is shown in the 3D world as planes. The Tools strip logic is the same as for 3D: tools follow the selected entity's components.
+
+## 15. AI-Driven Coding (Confirmed)
+
+AI-driven coding is supported through an external workflow in the first version. There is no AI inside the app yet.
+
+- A skill.md file holds the full VoxFable documentation and knowledge (sectors, Core API, components, scripts and hooks, plugins, export).
+- The user gives skill.md to an AI agent, which creates the scripts and any other files needed.
+- The user imports those files into the Assets Sheet and uses them in the project.
+- **v2**: internal AI with an AI Sheet inside Fusion, through the AI sector.
+
+Open for v2: how far an internal AI may go, for example writing scripts only, or also editing the scene directly.
+
+## 16. Undo and Redo (Confirmed; mechanism proposed)
+
+Undo and redo are supported (Confirmed). Proposed mechanism: all edits made by tools and the Inspector go through one command stack. Script-generated results are rebuilt from their inputs, so they do not need their own history. How undo treats script file edits is not decided yet.
+
+## 17. Open Items for Review
+
+1. Optional bake step: not discussed yet. The Core-under-script model does not require it (section 6).
+2. When a script is deleted or disabled, whether all other scripts on the entity re-run `onInit`, or only the ones that depend on it (section 6).
+3. The exact list of default components for v1 (section 4).
+4. How far an internal AI may go in v2 (section 15).
+5. How undo and redo treat script file edits (section 16).
+6. Entity reference attribute type and cross-entity events (sections 5 and 6).
+7. Security of plugins and scripts: both run arbitrary code in the user's browser. Whether any sandboxing or trust prompt is needed when importing a plugin.
+8. Project file format and versioning, so future engine versions can open old projects.
+9. Touch and mobile behavior of Studio, the Canvas gizmos and the sheets.
+
+## 18. Next Step
+
+After your review and corrections, the next step is the coding and library plan: repository layout (engine and Fusion as separate packages), library choices, and a build order starting with the engine skeleton and the Fusion shell.
